@@ -17,17 +17,18 @@ def _load_raw(path: str) -> pd.DataFrame:
     if "mae_rel" not in df.columns: df["mae_rel"] = df["mae"] / df["true"].abs().clip(lower=1e-8)
     return df
 
-def _agg_with_ci(df: pd.DataFrame, by: list[str], metric: str) -> pd.DataFrame:
+
+def _agg_with_se(df: pd.DataFrame, by: list[str], metric: str) -> pd.DataFrame:
     g = df.groupby(by, as_index=False).agg(
         mean=(metric, "mean"),
         sd=(metric, "std"),
         n_rep=(metric, "size"),
-        true_mean=("true","mean"),
-        missing=("missing","mean"),
+        true_mean=("TRUE", "mean") if "TRUE" in df.columns else (metric, "size"),
+        missing=("missing", "mean") if "missing" in df.columns else (metric, "size"),
     )
     g["se"] = g["sd"].fillna(0.0) / g["n_rep"].clip(lower=1).pow(0.5)
-    g["ci95"] = 1.96 * g["se"]
     return g
+
 
 def _nice_style():
     plt.rcParams.update({
@@ -54,31 +55,50 @@ COLOR_MAP = {
     "ipw":   "#7570b3",
 }
 
+def _draw_manual_errbars(ax, xs, lo, hi, color, cap_frac=0.03, lw=1.6, alpha=0.9):
+    # vertical segments
+    ax.vlines(xs, lo, hi, colors=color, linewidth=lw, alpha=alpha)
+
+    # caps: width proportional to x (works for log-scaled x)
+    cap = np.maximum(xs * cap_frac, 1e-12)
+    ax.hlines(lo, xs - cap, xs + cap, colors=color, linewidth=lw, alpha=alpha)
+    ax.hlines(hi, xs - cap, xs + cap, colors=color, linewidth=lw, alpha=alpha)
+
 
 def _plot_line_ci(ax, df_raw: pd.DataFrame, x: str, metric: str,
-                  ylabel: str, title: str, logy: bool=False, logx: bool=False):
+                  ylabel: str, title: str, logy: bool=False, logx: bool=False,
+                  show_se: bool=True, se_mult: float=1.0):
     methods = list(dict.fromkeys(df_raw["method"].tolist()))
+    eps = 1e-12
+
     for m in methods:
         d = df_raw[df_raw["method"] == m]
         if d.empty:
             continue
 
-        g = _agg_with_ci(d, by=[x], metric=metric)
+        g = _agg_with_se(d, by=[x], metric=metric).sort_values(by=x)
         xs = g[x].values
         color = COLOR_MAP.get(m, None)
 
-        # mean
         mean = g["mean"].values
-        # ci = g["ci95"].values
-        
-        # on log y-axis, make sure values are positive
-        if logy:
-            eps = 1e-12
-            mean_plot = np.maximum(mean, eps)
-        else:
-            mean_plot = mean
+        se = g["se"].values * float(se_mult)
 
+        # mean line
+        mean_plot = np.maximum(mean, eps) if logy else mean
         ax.plot(xs, mean_plot, marker="o", lw=2.0, label=m, color=color)
+
+        # manual +/- se bars
+        if show_se:
+            lo = mean - se
+            hi = mean + se
+
+            if logy:
+                # only draw bars where lower bound is valid on log scale
+                ok = lo > eps
+                if np.any(ok):
+                    _draw_manual_errbars(ax, xs[ok], lo[ok], hi[ok], color=color)
+            else:
+                _draw_manual_errbars(ax, xs, lo, hi, color=color)
 
     ax.set_xlabel(x)
     ax.set_ylabel(ylabel + (" (log2 scale)" if logy else ""))
@@ -88,6 +108,9 @@ def _plot_line_ci(ax, df_raw: pd.DataFrame, x: str, metric: str,
     if logx:
         ax.set_xscale("log", base=2)
     ax.legend(frameon=True, loc="best", title="method")
+
+
+
 
 
 
@@ -191,7 +214,8 @@ def plot_panel_mae(tables: str, outdir: str):
     ax0, ax1 = axes
 
     _plot_line_ci(ax0, df_size, x="n", metric="mae",
-                  ylabel="MAE", title="MAE vs n", logy=True, logx=True)
+              ylabel="MAE", title="MAE vs n", logy=True, logx=True)
+
 
     _plot_line_ci(ax1, df_h, x="T", metric="mae",
                   ylabel="MAE", title="MAE vs T", logy=True, logx=True)
