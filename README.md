@@ -31,9 +31,8 @@ Tables will be saved under:
 ## 3. Plot figures
 
 ```bash
-python -m scripts.plot_ope_results --which size --tables results/tables --outdir results/figures
-python -m scripts.plot_ope_results --which horizon --tables results/tables --outdir results/figures
-python -m scripts.plot_ope_results --which panel --tables results/tables --outdir results/figures
+python -m scripts.plot_ope_results --which panel --tables results\tables --outdir results\figures
+python -m scripts.plot_ope_results --which panel_mae --tables results\tables --outdir results\figures
 ```
 
 Figures will be saved under:

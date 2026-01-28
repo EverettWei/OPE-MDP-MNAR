@@ -71,7 +71,7 @@ def _plot_line_ci(ax, df_raw: pd.DataFrame, x: str, metric: str,
         mean = g["mean"].values
         # ci = g["ci95"].values
         
-        # on log y-axis
+        # on log y-axis, make sure values are positive
         if logy:
             eps = 1e-12
             mean_plot = np.maximum(mean, eps)
@@ -93,39 +93,39 @@ def _plot_line_ci(ax, df_raw: pd.DataFrame, x: str, metric: str,
 
 
 
-# ---------------- single-mode plotters ----------------
-
-def plot_size(df_size: pd.DataFrame, outdir: str):
+# ---------------- plot MSE ----------------
+def plot_size_mse(df_size: pd.DataFrame, outdir: str):
     _nice_style()
     _ensure_dir(outdir)
-    # Relative MAE vs n
-    fig, ax = plt.subplots(figsize=(6.8, 4.6))
-    _plot_line_ci(ax, df_size, x="n", metric="mae_rel",
-                  ylabel="MAE / |V_true|", title="Relative MAE vs n", logy=False, logx=True)
-    plt.tight_layout(); plt.savefig(os.path.join(outdir, "mae_rel_vs_n_size.png")); plt.close()
 
-    # log10 MSE vs n
     fig, ax = plt.subplots(figsize=(6.8, 4.6))
-    _plot_line_ci(ax, df_size, x="n", metric="mse",
-              ylabel="MSE", title="MSE vs n", logy=True, logx=True)
-    plt.tight_layout(); plt.savefig(os.path.join(outdir, "mse_vs_n_size.png")); plt.close()
+    _plot_line_ci(
+        ax, df_size, x="n", metric="mse",
+        ylabel="MSE", title="MSE vs n",
+        logy=True, logx=True
+    )
+    plt.tight_layout()
+    plt.savefig(os.path.join(outdir, "mse_vs_n_size.png"))
+    plt.close()
 
-def plot_horizon(df_h: pd.DataFrame, outdir: str):
+
+def plot_horizon_mse(df_h: pd.DataFrame, outdir: str):
     _nice_style()
     _ensure_dir(outdir)
-    # Relative MAE vs T
-    fig, ax = plt.subplots(figsize=(6.8, 4.6))
-    _plot_line_ci(ax, df_h, x="T", metric="mae_rel",
-                  ylabel="MAE / |V_true|", title="Relative MAE vs T", logy=False, logx=True)
-    plt.tight_layout(); plt.savefig(os.path.join(outdir, "mae_rel_vs_T_horizon.png")); plt.close()
 
-    # log10 MSE vs T
     fig, ax = plt.subplots(figsize=(6.8, 4.6))
-    _plot_line_ci(ax, df_h, x="T", metric="mse",
-              ylabel="MSE", title="MSE vs T", logy=True, logx=True)
-    plt.tight_layout(); plt.savefig(os.path.join(outdir, "mse_vs_T_horizon.png")); plt.close()
+    _plot_line_ci(
+        ax, df_h, x="T", metric="mse",
+        ylabel="MSE", title="MSE vs T",
+        logy=True, logx=True
+    )
+    plt.tight_layout()
+    plt.savefig(os.path.join(outdir, "mse_vs_T_horizon.png"))
+    plt.close()
 
-# ---------------- panel (1x2) ----------------
+
+
+# ---------------- MSE panel (1x2) ----------------
 
 def plot_panel(tables: str, outdir: str):
     _nice_style()
@@ -152,6 +152,7 @@ def plot_panel(tables: str, outdir: str):
     _plot_line_ci(ax1, df_h, x="T", metric="mse",
                   ylabel="MSE", title="MSE vs T", logy=True, logx=True)
 
+    # remove per-axis legends, use one common legend
     leg0 = ax0.get_legend()
     if leg0 is not None:
         leg0.remove()
@@ -169,6 +170,96 @@ def plot_panel(tables: str, outdir: str):
     plt.close()
     print(f"[plot] panel saved to {out_path}")
 
+
+# ---------------- MAE panel (1x2) ----------------
+
+def plot_panel_mae(tables: str, outdir: str):
+    _nice_style()
+    _ensure_dir(outdir)
+
+    p_size = os.path.join(tables, "ope_runs_size.csv")
+    p_hor  = os.path.join(tables, "ope_runs_horizon.csv")
+    if not os.path.isfile(p_size):
+        raise FileNotFoundError(f"{p_size} not found. Run eval_grid --mode size first.")
+    if not os.path.isfile(p_hor):
+        raise FileNotFoundError(f"{p_hor} not found. Run eval_grid --mode horizon first.")
+
+    df_size = _load_raw(p_size)
+    df_h    = _load_raw(p_hor)
+
+    fig, axes = plt.subplots(1, 2, figsize=(12.5, 4.8))
+    ax0, ax1 = axes
+
+    _plot_line_ci(ax0, df_size, x="n", metric="mae",
+                  ylabel="MAE", title="MAE vs n", logy=True, logx=True)
+
+    _plot_line_ci(ax1, df_h, x="T", metric="mae",
+                  ylabel="MAE", title="MAE vs T", logy=True, logx=True)
+
+    leg0 = ax0.get_legend()
+    if leg0 is not None:
+        leg0.remove()
+    leg1 = ax1.get_legend()
+    if leg1 is not None:
+        leg1.remove()
+
+    handles, labels = ax0.get_legend_handles_labels()
+    fig.legend(handles, labels, loc="upper center",
+               ncol=max(3, len(labels)), frameon=True, title="method")
+
+    plt.tight_layout(rect=[0, 0, 1, 0.90])
+    out_path = os.path.join(outdir, "panel_ope_mae.png")
+    plt.savefig(out_path)
+    plt.close()
+    print(f"[plot] MAE panel saved to {out_path}")
+
+
+# ---------------- MSE+MAE panel (2x2) ----------------
+
+def plot_grid_2x2(tables: str, outdir: str):
+    _nice_style()
+    _ensure_dir(outdir)
+
+    p_size = os.path.join(tables, "ope_runs_size.csv")
+    p_hor  = os.path.join(tables, "ope_runs_horizon.csv")
+    if not os.path.isfile(p_size):
+        raise FileNotFoundError(f"{p_size} not found. Run eval_grid --mode size first.")
+    if not os.path.isfile(p_hor):
+        raise FileNotFoundError(f"{p_hor} not found. Run eval_grid --mode horizon first.")
+
+    df_size = _load_raw(p_size)
+    df_h    = _load_raw(p_hor)
+
+    fig, axes = plt.subplots(2, 2, figsize=(12.8, 9.0))
+    ax00, ax01 = axes[0, 0], axes[0, 1]
+    ax10, ax11 = axes[1, 0], axes[1, 1]
+
+    _plot_line_ci(ax00, df_size, x="n", metric="mse",
+                  ylabel="MSE", title="MSE vs n", logy=True, logx=True)
+    _plot_line_ci(ax01, df_h, x="T", metric="mse",
+                  ylabel="MSE", title="MSE vs T", logy=True, logx=True)
+
+    _plot_line_ci(ax10, df_size, x="n", metric="mae",
+                  ylabel="MAE", title="MAE vs n", logy=True, logx=True)
+    _plot_line_ci(ax11, df_h, x="T", metric="mae",
+                  ylabel="MAE", title="MAE vs T", logy=True, logx=True)
+
+    for ax in [ax00, ax01, ax10, ax11]:
+        leg = ax.get_legend()
+        if leg is not None:
+            leg.remove()
+
+    handles, labels = ax00.get_legend_handles_labels()
+    fig.legend(handles, labels, loc="upper center",
+               ncol=max(3, len(labels)), frameon=True, title="method")
+
+    plt.tight_layout(rect=[0, 0, 1, 0.93])
+    out_path = os.path.join(outdir, "grid_ope_mse_mae_2x2.png")
+    plt.savefig(out_path)
+    plt.close()
+    print(f"[plot] 2x2 grid saved to {out_path}")
+
+
 # ---------------- CLI ----------------
 
 def main():
@@ -176,8 +267,9 @@ def main():
     ap.add_argument("--tables", type=str, default="results/tables",
                     help="directory containing ope_runs_{size,horizon}.csv")
     ap.add_argument("--which", type=str, default="size",
-                    choices=["size","horizon","panel"],
-                    help="which figure(s) to make")
+                choices=["size", "horizon", "panel", "panel_mae", "grid2x2"],
+                help="which figure(s) to make")
+
     ap.add_argument("--outdir", type=str, default="results/figures",
                     help="where to save figures")
     ap.add_argument("--gui", action="store_true", help="interactive backend")
@@ -189,10 +281,14 @@ def main():
 
     if args.which == "size":
         df = _load_raw(os.path.join(args.tables, "ope_runs_size.csv"))
-        plot_size(df, args.outdir)
+        plot_size_mse(df, args.outdir)
     elif args.which == "horizon":
         df = _load_raw(os.path.join(args.tables, "ope_runs_horizon.csv"))
-        plot_horizon(df, args.outdir)
+        plot_horizon_mse(df, args.outdir)
+    elif args.which == "panel_mae":
+        plot_panel_mae(args.tables, args.outdir)
+    elif args.which == "grid2x2":
+        plot_grid_2x2(args.tables, args.outdir)
     else:
         plot_panel(args.tables, args.outdir)
 
