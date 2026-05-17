@@ -142,15 +142,12 @@ class MNARMDP(gym.Env):
         eps_s = self._rng.normal(loc=0.0, scale=self.cfg.sigma_s, size=2)
         s_next = np.array([0.9, 0.9]) * self._s + 0.2 * a + eps_s
 
-        # 2. True reward: R_t
-        eps_r = float(self._rng.uniform(low=-0.1, high=0.1, size=None))
-        w_s = np.array([0.9 - 0.6 * a, -0.7])
-        w_sp = np.array([1.3, 2.0])
-        r_true = float(sigmoid(w_s @ self._s + w_sp @ s_next - 0.4 * a) + eps_r)
+        # 2. True reward: R_t (depends on reward_type)
+        r_true = self._compute_reward(self._s, a, s_next)
 
         # 3. MNAR missingness
         linear_s = np.array([1.0, -2.0]) @ self._s
-        logit_o = 1.0 - 0.1 * a + 0.2 * linear_s + 2.5 * r_true
+        logit_o = self.cfg.mnar_c0 - 0.1 * a + 0.2 * linear_s + 2.5 * r_true
         p_o = float(sigmoid(logit_o))
         o_t = int(self._rng.bernoulli(p_o))
 
@@ -204,6 +201,28 @@ class MNARMDP(gym.Env):
         '''
         z = self._rng.normal(loc=0.0, scale=self.cfg.init_std, size=2)
         return self.cfg.init_mean + z
+
+    def _compute_reward(self, s: np.ndarray, a: int, s_next: np.ndarray) -> float:
+        '''
+        Compute R_t given (S_t, A_t, S_{t+1}) based on cfg.reward_type.
+
+        All variants depend on S_{t+1} to satisfy the shadow variable
+        relevance condition (Assumption 4.2).
+        '''
+        rt = self.cfg.reward_type
+        if rt == 'sigmoid':
+            eps_r = float(self._rng.uniform(low=-0.1, high=0.1, size=None))
+            w_s = np.array([0.9 - 0.6 * a, -0.7])
+            w_sp = np.array([1.3, 2.0])
+            return float(sigmoid(w_s @ s + w_sp @ s_next - 0.4 * a) + eps_r)
+        elif rt == 'linear':
+            eps_r = float(self._rng.normal(loc=0.0, scale=0.1, size=None))
+            val = (np.array([0.5, -0.3]) @ s
+                   + np.array([0.8, 0.6]) @ s_next
+                   - 0.3 * a + eps_r)
+            return float(np.clip(val, -1.0, 1.0))
+        else:
+            raise ValueError(f"Unknown reward_type: {rt}")
 
     @staticmethod
     def _pack_obs(s: np.ndarray, o_prev: int) -> np.ndarray:

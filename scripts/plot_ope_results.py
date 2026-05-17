@@ -12,7 +12,6 @@ def _ensure_dir(d: str):
 def _load_raw(path: str) -> pd.DataFrame:
     df = pd.read_csv(path)
     df = df.copy()
-    # ensure required metrics
     if "mae" not in df.columns: df["mae"] = df["bias"].abs()
     if "mae_rel" not in df.columns: df["mae_rel"] = df["mae"] / df["true"].abs().clip(lower=1e-8)
     return df
@@ -50,16 +49,24 @@ def _nice_style():
     })
 
 COLOR_MAP = {
-    "naive": "#d95f02",
-    "prox":  "#1b9e77",
-    "ipw":   "#7570b3",
+    "naive":  "#d95f02",
+    "prox":   "#1b9e77",
+    "ipw":    "#7570b3",
+    "impute": "#e7298a",
+    "scope":  "#66a61e",
 }
 
-def _draw_manual_errbars(ax, xs, lo, hi, color, cap_frac=0.03, lw=1.6, alpha=0.9):
-    # vertical segments
-    ax.vlines(xs, lo, hi, colors=color, linewidth=lw, alpha=alpha)
+C0_TO_MISS_PCT = {
+    0.3: "~20%",
+    -0.7: "~40%",
+    -1.5: "~60%",
+    -2.8: "~80%",
+}
 
-    # caps: width proportional to x (works for log-scaled x)
+CROSS_C0S = [0.3, -0.7, -2.8]  # ~20%, ~40%, ~80%
+
+def _draw_manual_errbars(ax, xs, lo, hi, color, cap_frac=0.03, lw=1.6, alpha=0.9):
+    ax.vlines(xs, lo, hi, colors=color, linewidth=lw, alpha=alpha)
     cap = np.maximum(xs * cap_frac, 1e-12)
     ax.hlines(lo, xs - cap, xs + cap, colors=color, linewidth=lw, alpha=alpha)
     ax.hlines(hi, xs - cap, xs + cap, colors=color, linewidth=lw, alpha=alpha)
@@ -83,17 +90,13 @@ def _plot_line_ci(ax, df_raw: pd.DataFrame, x: str, metric: str,
         mean = g["mean"].values
         se = g["se"].values * float(se_mult)
 
-        # mean line
         mean_plot = np.maximum(mean, eps) if logy else mean
         ax.plot(xs, mean_plot, marker="o", lw=2.0, label=m, color=color)
 
-        # manual +/- se bars
         if show_se:
             lo = mean - se
             hi = mean + se
-
             if logy:
-                # only draw bars where lower bound is valid on log scale
                 ok = lo > eps
                 if np.any(ok):
                     _draw_manual_errbars(ax, xs[ok], lo[ok], hi[ok], color=color)
@@ -110,190 +113,158 @@ def _plot_line_ci(ax, df_raw: pd.DataFrame, x: str, metric: str,
     ax.legend(frameon=True, loc="best", title="method")
 
 
+# ============================================================
+# Cross-product plots: 1x3, one subplot per missingness %
+# ============================================================
 
-
-
-
-
-
-# ---------------- plot MSE ----------------
-def plot_size_mse(df_size: pd.DataFrame, outdir: str):
+def plot_size_x_missrate(tables: str, outdir: str):
+    """1x3 panel: MSE vs n, one subplot per missingness percentage."""
     _nice_style()
     _ensure_dir(outdir)
 
-    fig, ax = plt.subplots(figsize=(6.8, 4.6))
-    _plot_line_ci(
-        ax, df_size, x="n", metric="mse",
-        ylabel="MSE", title="MSE vs n",
-        logy=True, logx=True
-    )
-    plt.tight_layout()
-    plt.savefig(os.path.join(outdir, "mse_vs_n_size.png"))
-    plt.close()
+    p = os.path.join(tables, "ope_runs_size_x_missrate.csv")
+    if not os.path.isfile(p):
+        raise FileNotFoundError(f"{p} not found. Run eval_grid --mode size_x_missrate first.")
 
+    df = _load_raw(p)
+    if "mnar_c0" not in df.columns:
+        raise KeyError("mnar_c0 column not found in CSV.")
 
-def plot_horizon_mse(df_h: pd.DataFrame, outdir: str):
-    _nice_style()
-    _ensure_dir(outdir)
+    fig, axes = plt.subplots(1, 3, figsize=(18, 5.0))
 
-    fig, ax = plt.subplots(figsize=(6.8, 4.6))
-    _plot_line_ci(
-        ax, df_h, x="T", metric="mse",
-        ylabel="MSE", title="MSE vs T",
-        logy=True, logx=True
-    )
-    plt.tight_layout()
-    plt.savefig(os.path.join(outdir, "mse_vs_T_horizon.png"))
-    plt.close()
+    for idx, c0 in enumerate(CROSS_C0S):
+        ax = axes[idx]
+        sub = df[df["mnar_c0"] == c0]
+        miss_label = C0_TO_MISS_PCT.get(c0, f"c0={c0}")
+        _plot_line_ci(ax, sub, x="n", metric="mse",
+                      ylabel="MSE", title=f"MSE vs n  (missingness {miss_label})",
+                      logy=True, logx=True)
 
-
-
-# ---------------- MSE panel (1x2) ----------------
-
-def plot_panel(tables: str, outdir: str):
-    _nice_style()
-    _ensure_dir(outdir)
-
-    p_size = os.path.join(tables, "ope_runs_size.csv")
-    p_hor  = os.path.join(tables, "ope_runs_horizon.csv")
-    if not os.path.isfile(p_size):
-        raise FileNotFoundError(f"{p_size} not found. Run eval_grid --mode size first.")
-    if not os.path.isfile(p_hor):
-        raise FileNotFoundError(f"{p_hor} not found. Run eval_grid --mode horizon first.")
-
-    df_size = _load_raw(p_size)
-    df_h    = _load_raw(p_hor)
-
-    fig, axes = plt.subplots(1, 2, figsize=(12.5, 4.8))
-    ax0, ax1 = axes
-
-    # left: MSE vs n
-    _plot_line_ci(ax0, df_size, x="n", metric="mse",
-                  ylabel="MSE", title="MSE vs n", logy=True, logx=True)
-
-    # right: MSE vs T
-    _plot_line_ci(ax1, df_h, x="T", metric="mse",
-                  ylabel="MSE", title="MSE vs T", logy=True, logx=True)
-
-    # remove per-axis legends, use one common legend
-    leg0 = ax0.get_legend()
-    if leg0 is not None:
-        leg0.remove()
-    leg1 = ax1.get_legend()
-    if leg1 is not None:
-        leg1.remove()
-
-    handles, labels = ax0.get_legend_handles_labels()
-    fig.legend(handles, labels, loc="upper center",
-               ncol=max(3, len(labels)), frameon=True, title="method")
-
-    plt.tight_layout(rect=[0, 0, 1, 0.90])
-    out_path = os.path.join(outdir, "panel_ope_mse.png")
-    plt.savefig(out_path)
-    plt.close()
-    print(f"[plot] panel saved to {out_path}")
-
-
-# ---------------- MAE panel (1x2) ----------------
-
-def plot_panel_mae(tables: str, outdir: str):
-    _nice_style()
-    _ensure_dir(outdir)
-
-    p_size = os.path.join(tables, "ope_runs_size.csv")
-    p_hor  = os.path.join(tables, "ope_runs_horizon.csv")
-    if not os.path.isfile(p_size):
-        raise FileNotFoundError(f"{p_size} not found. Run eval_grid --mode size first.")
-    if not os.path.isfile(p_hor):
-        raise FileNotFoundError(f"{p_hor} not found. Run eval_grid --mode horizon first.")
-
-    df_size = _load_raw(p_size)
-    df_h    = _load_raw(p_hor)
-
-    fig, axes = plt.subplots(1, 2, figsize=(12.5, 4.8))
-    ax0, ax1 = axes
-
-    _plot_line_ci(ax0, df_size, x="n", metric="mae",
-              ylabel="MAE", title="MAE vs n", logy=True, logx=True)
-
-
-    _plot_line_ci(ax1, df_h, x="T", metric="mae",
-                  ylabel="MAE", title="MAE vs T", logy=True, logx=True)
-
-    leg0 = ax0.get_legend()
-    if leg0 is not None:
-        leg0.remove()
-    leg1 = ax1.get_legend()
-    if leg1 is not None:
-        leg1.remove()
-
-    handles, labels = ax0.get_legend_handles_labels()
-    fig.legend(handles, labels, loc="upper center",
-               ncol=max(3, len(labels)), frameon=True, title="method")
-
-    plt.tight_layout(rect=[0, 0, 1, 0.90])
-    out_path = os.path.join(outdir, "panel_ope_mae.png")
-    plt.savefig(out_path)
-    plt.close()
-    print(f"[plot] MAE panel saved to {out_path}")
-
-
-# ---------------- MSE+MAE panel (2x2) ----------------
-
-def plot_grid_2x2(tables: str, outdir: str):
-    _nice_style()
-    _ensure_dir(outdir)
-
-    p_size = os.path.join(tables, "ope_runs_size.csv")
-    p_hor  = os.path.join(tables, "ope_runs_horizon.csv")
-    if not os.path.isfile(p_size):
-        raise FileNotFoundError(f"{p_size} not found. Run eval_grid --mode size first.")
-    if not os.path.isfile(p_hor):
-        raise FileNotFoundError(f"{p_hor} not found. Run eval_grid --mode horizon first.")
-
-    df_size = _load_raw(p_size)
-    df_h    = _load_raw(p_hor)
-
-    fig, axes = plt.subplots(2, 2, figsize=(12.8, 9.0))
-    ax00, ax01 = axes[0, 0], axes[0, 1]
-    ax10, ax11 = axes[1, 0], axes[1, 1]
-
-    _plot_line_ci(ax00, df_size, x="n", metric="mse",
-                  ylabel="MSE", title="MSE vs n", logy=True, logx=True)
-    _plot_line_ci(ax01, df_h, x="T", metric="mse",
-                  ylabel="MSE", title="MSE vs T", logy=True, logx=True)
-
-    _plot_line_ci(ax10, df_size, x="n", metric="mae",
-                  ylabel="MAE", title="MAE vs n", logy=True, logx=True)
-    _plot_line_ci(ax11, df_h, x="T", metric="mae",
-                  ylabel="MAE", title="MAE vs T", logy=True, logx=True)
-
-    for ax in [ax00, ax01, ax10, ax11]:
+    for ax in axes.flat:
         leg = ax.get_legend()
-        if leg is not None:
-            leg.remove()
+        if leg is not None: leg.remove()
 
-    handles, labels = ax00.get_legend_handles_labels()
-    fig.legend(handles, labels, loc="upper center",
-               ncol=max(3, len(labels)), frameon=True, title="method")
+    handles, labels = axes[0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc="lower center",
+               ncol=len(labels), frameon=True, title="method",
+               bbox_to_anchor=(0.5, -0.02))
 
-    plt.tight_layout(rect=[0, 0, 1, 0.93])
-    out_path = os.path.join(outdir, "grid_ope_mse_mae_2x2.png")
-    plt.savefig(out_path)
+    plt.tight_layout(rect=[0, 0.08, 1, 1.0])
+    out_path = os.path.join(outdir, "mse_vs_n_by_missingness.pdf")
+    plt.savefig(out_path, bbox_inches="tight", pad_inches=0.4)
     plt.close()
-    print(f"[plot] 2x2 grid saved to {out_path}")
+    print(f"[plot] size_x_missrate saved to {out_path}")
+
+
+def plot_horizon_x_missrate(tables: str, outdir: str):
+    """1x3 panel: MSE vs T, one subplot per missingness percentage."""
+    _nice_style()
+    _ensure_dir(outdir)
+
+    p = os.path.join(tables, "ope_runs_horizon_x_missrate.csv")
+    if not os.path.isfile(p):
+        raise FileNotFoundError(f"{p} not found. Run eval_grid --mode horizon_x_missrate first.")
+
+    df = _load_raw(p)
+    if "mnar_c0" not in df.columns:
+        raise KeyError("mnar_c0 column not found in CSV.")
+
+    fig, axes = plt.subplots(1, 3, figsize=(18, 5.0))
+
+    for idx, c0 in enumerate(CROSS_C0S):
+        ax = axes[idx]
+        sub = df[df["mnar_c0"] == c0]
+        miss_label = C0_TO_MISS_PCT.get(c0, f"c0={c0}")
+        _plot_line_ci(ax, sub, x="T", metric="mse",
+                      ylabel="MSE", title=f"MSE vs T  (missingness {miss_label})",
+                      logy=True, logx=True)
+
+    for ax in axes.flat:
+        leg = ax.get_legend()
+        if leg is not None: leg.remove()
+
+    handles, labels = axes[0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc="lower center",
+               ncol=len(labels), frameon=True, title="method",
+               bbox_to_anchor=(0.5, -0.02))
+
+    plt.tight_layout(rect=[0, 0.08, 1, 1.0])
+    out_path = os.path.join(outdir, "mse_vs_T_by_missingness.pdf")
+    plt.savefig(out_path, bbox_inches="tight", pad_inches=0.4)
+    plt.close()
+    print(f"[plot] horizon_x_missrate saved to {out_path}")
+
+
+def plot_reward_x_missrate(tables: str, outdir: str):
+    """1x3 panel: grouped bars of MSE by reward type, one subplot per missingness percentage."""
+    _nice_style()
+    _ensure_dir(outdir)
+
+    p = os.path.join(tables, "ope_runs_reward_x_missrate.csv")
+    if not os.path.isfile(p):
+        raise FileNotFoundError(f"{p} not found. Run eval_grid --mode reward_x_missrate first.")
+
+    df = _load_raw(p)
+    if "mnar_c0" not in df.columns or "reward_type" not in df.columns:
+        raise KeyError("mnar_c0 and reward_type columns required in CSV.")
+
+    rtypes = list(dict.fromkeys(df["reward_type"].tolist()))
+    methods = list(dict.fromkeys(df["method"].tolist()))
+
+    fig, axes = plt.subplots(1, 3, figsize=(18, 5.0))
+
+    for idx, c0 in enumerate(CROSS_C0S):
+        ax = axes[idx]
+        sub = df[df["mnar_c0"] == c0]
+        miss_label = C0_TO_MISS_PCT.get(c0, f"c0={c0}")
+
+        x_pos = np.arange(len(rtypes))
+        width = 0.8 / max(len(methods), 1)
+
+        for i, m in enumerate(methods):
+            means, ses = [], []
+            for rt in rtypes:
+                s = sub[(sub["method"] == m) & (sub["reward_type"] == rt)]
+                means.append(s["mse"].mean() if len(s) else 0)
+                se = s["mse"].std() / max(len(s), 1) ** 0.5 if len(s) > 1 else 0
+                ses.append(se)
+
+            offset = (i - len(methods) / 2 + 0.5) * width
+            color = COLOR_MAP.get(m, None)
+            ax.bar(x_pos + offset, means, width, yerr=ses,
+                   label=m, color=color, capsize=3, alpha=0.85)
+
+        ax.set_xticks(x_pos)
+        ax.set_xticklabels(rtypes)
+        ax.set_xlabel("Reward Type")
+        ax.set_ylabel("MSE")
+        ax.set_title(f"MSE by Reward Type  (missingness {miss_label})")
+        ax.set_yscale("log", base=2)
+
+    for ax in axes.flat:
+        leg = ax.get_legend()
+        if leg is not None: leg.remove()
+
+    handles, labels = axes[0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc="lower center",
+               ncol=len(labels), frameon=True, title="method",
+               bbox_to_anchor=(0.5, -0.02))
+
+    plt.tight_layout(rect=[0, 0.08, 1, 1.0])
+    out_path = os.path.join(outdir, "mse_reward_by_missingness.pdf")
+    plt.savefig(out_path, bbox_inches="tight", pad_inches=0.4)
+    plt.close()
+    print(f"[plot] reward_x_missrate saved to {out_path}")
 
 
 # ---------------- CLI ----------------
-
 def main():
-    ap = argparse.ArgumentParser("Plot OPE results (size/horizon/panel).")
+    ap = argparse.ArgumentParser("Plot OPE simulation results.")
     ap.add_argument("--tables", type=str, default="results/tables",
-                    help="directory containing ope_runs_{size,horizon}.csv")
-    ap.add_argument("--which", type=str, default="size",
-                choices=["size", "horizon", "panel", "panel_mae", "grid2x2"],
+                    help="directory containing ope_runs_*.csv")
+    ap.add_argument("--which", type=str, default="all",
+                choices=["size_x_missrate", "horizon_x_missrate", "reward_x_missrate", "all"],
                 help="which figure(s) to make")
-
     ap.add_argument("--outdir", type=str, default="results/figures",
                     help="where to save figures")
     ap.add_argument("--gui", action="store_true", help="interactive backend")
@@ -303,18 +274,16 @@ def main():
 
     _ensure_dir(args.outdir)
 
-    if args.which == "size":
-        df = _load_raw(os.path.join(args.tables, "ope_runs_size.csv"))
-        plot_size_mse(df, args.outdir)
-    elif args.which == "horizon":
-        df = _load_raw(os.path.join(args.tables, "ope_runs_horizon.csv"))
-        plot_horizon_mse(df, args.outdir)
-    elif args.which == "panel_mae":
-        plot_panel_mae(args.tables, args.outdir)
-    elif args.which == "grid2x2":
-        plot_grid_2x2(args.tables, args.outdir)
-    else:
-        plot_panel(args.tables, args.outdir)
+    if args.which == "all":
+        plot_size_x_missrate(args.tables, args.outdir)
+        plot_horizon_x_missrate(args.tables, args.outdir)
+        plot_reward_x_missrate(args.tables, args.outdir)
+    elif args.which == "size_x_missrate":
+        plot_size_x_missrate(args.tables, args.outdir)
+    elif args.which == "horizon_x_missrate":
+        plot_horizon_x_missrate(args.tables, args.outdir)
+    elif args.which == "reward_x_missrate":
+        plot_reward_x_missrate(args.tables, args.outdir)
 
     print(f"[plot] figures saved to {args.outdir}")
 
