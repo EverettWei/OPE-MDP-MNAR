@@ -42,6 +42,9 @@ realdata/               Pre-computed sepsis results
 
 results/                Pre-computed simulation results
   tables/               Raw and summary CSVs for all three sweeps
+
+submit_simulation.sh    SLURM batch script for simulation studies
+submit_realdata.sh      SLURM batch script for real-data experiment
 ```
 
 ---
@@ -66,10 +69,10 @@ Before submitting, open each script and set `CONDA_SH` and `CONDA_ENV` to
 match your cluster's conda installation.
 
 ```bash
-# Simulation studies (CPU, ~7 days for full 50-seed sweep)
+# Simulation studies
 sbatch submit_simulation.sh
 
-# Real-data experiment (GPU, ~2 days for full pipeline)
+# Real-data experiment (requires GPU)
 sbatch submit_realdata.sh
 ```
 
@@ -95,14 +98,14 @@ python -m scripts.eval_grid \
     --mode size_x_missrate \
     --ns 64,128,256,512,1024,2048 --Ts 8 \
     --seeds 321:370 --mnar-c0s "0.3,-0.7,-1.5,-2.8" \
-    --gamma 1 --device cpu --n_workers 30
+    --gamma 1 --device cuda --n_workers 30
 
 # Sweep 2: varying horizon  (Appendix)
 python -m scripts.eval_grid \
     --mode horizon_x_missrate \
     --ns 512 --Ts 2,4,8,16,32 \
     --seeds 321:370 --mnar-c0s "0.3,-0.7,-1.5,-2.8" \
-    --gamma 1 --device cpu --n_workers 30
+    --gamma 1 --device cuda --n_workers 30
 
 # Sweep 3: varying reward type  (Appendix)
 python -m scripts.eval_grid \
@@ -110,7 +113,7 @@ python -m scripts.eval_grid \
     --ns 512 --Ts 8 \
     --seeds 321:370 --mnar-c0s "0.3,-0.7,-1.5,-2.8" \
     --reward-types "sigmoid,linear" \
-    --gamma 1 --device cpu --n_workers 30
+    --gamma 1 --device cuda --n_workers 30
 ```
 
 **Quick test** (5 seeds, 5 workers):
@@ -120,7 +123,7 @@ python -m scripts.eval_grid \
     --mode size_x_missrate \
     --ns 64,128,256,512,1024,2048 --Ts 8 \
     --seeds 321:325 --mnar-c0s "0.3,-0.7,-1.5,-2.8" \
-    --gamma 1 --device cpu --n_workers 5
+    --gamma 1 --device cuda --n_workers 5
 ```
 
 Results are saved to `results/tables/`. Pre-computed results from the paper are already included.
