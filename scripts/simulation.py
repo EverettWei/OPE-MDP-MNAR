@@ -4,9 +4,9 @@ import numpy as np
 import torch
 
 try:
-    from src.OPE.fqe import ProxFQE, NaiveFQE, WeightedFQE
+    from src.OPE.fqe import ProxFQE, NaiveFQE, WeightedFQE, ImputeFQE, SCOPE
 except Exception:
-    from OPE.fqe import ProxFQE, NaiveFQE, WeightedFQE  # type: ignore
+    from OPE.fqe import ProxFQE, NaiveFQE, WeightedFQE, ImputeFQE, SCOPE  # type: ignore
 
 
 # -------------------------- dataset helpers --------------------------
@@ -20,7 +20,8 @@ def load_npz_dataset(path: str) -> dict:
     return {k: data[k] for k in required}
 
 
-def compute_true_value_via_target_rollout(T, gamma, seed=1234, n_eval=5000):
+def compute_true_value_via_target_rollout(T, gamma, seed=1234, n_eval=5000,
+                                          mnar_c0=1.0, reward_type='sigmoid'):
     """
     On-policy rollout of the target policy on MNARMDP.
     """
@@ -37,7 +38,8 @@ def compute_true_value_via_target_rollout(T, gamma, seed=1234, n_eval=5000):
             rng_policy = np.random.RandomState(seed + 1)
             bernoulli = lambda p: 1 if rng_policy.rand() < p else 0
 
-        cfg = EnvConfig(horizon=T, seed=seed, gamma=gamma)
+        cfg = EnvConfig(horizon=T, seed=seed, gamma=gamma,
+                        mnar_c0=mnar_c0, reward_type=reward_type)
         env = MNARMDP(cfg)
         pi = TargetPolicy()
 
@@ -189,6 +191,26 @@ def main():
         device=args.device
     ).fit(ds, target_pi)
 
+    print("[Training] ImputeFQE ...")
+    impute_fqe = ImputeFQE(
+        action_list=(-1, +1),
+        gamma=args.gamma,
+        krr_kwargs=dict(lam_grid=np.logspace(-7, 1, 30).tolist(),
+                         folds=5, device=args.device),
+        device=args.device
+    ).fit(ds, target_pi)
+
+    print("[Training] SCOPE ...")
+    from src.policies.behavior_policy import BehaviorPolicy as _BPol
+    scope = SCOPE(
+        gamma=args.gamma,
+        frac_shape=0.3,
+        krr_kwargs=dict(lam_grid=np.logspace(-7, 1, 30).tolist(),
+                         folds=5, device=args.device),
+        w_cap=50.0,
+        device=args.device
+    ).fit(ds, target_pi, _BPol(seed=args.seed + 11))
+
     # 4) Aggregate V(pi) over initial states
     t = ds["t"].astype(int)
     S1 = ds["obs"][t == 1, :2]
@@ -197,7 +219,8 @@ def main():
     v_naive = naive.value(S1, O0)
     v_prox = prox.value(S1, O0)
     v_ipw = ipw.value(S1, O0)
-    
+    v_impute = impute_fqe.value(S1, O0)
+    v_scope = scope.value()
 
     # 5) Ground-truth
     v_true = compute_true_value_via_target_rollout(T=args.T, gamma=args.gamma,
@@ -205,8 +228,10 @@ def main():
 
     print("\n================= RESULTS =================")
     print(f"NaiveFQE              : {v_naive: .6f}")
-    print(f"ProxFQE    : {v_prox: .6f}")
+    print(f"ImputeFQE             : {v_impute: .6f}")
+    print(f"ProxFQE               : {v_prox: .6f}")
     print(f"IPW-FQE               : {v_ipw: .6f}")
+    print(f"SCOPE                 : {v_scope: .6f}")
     print(f"True (target rollout) : {v_true: .6f}" if not np.isnan(v_true) else "True (target rollout) : N/A")
     print("===========================================")
 

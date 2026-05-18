@@ -547,6 +547,115 @@ class NaiveFQE:
     
 
 
+# --------------------------- baseline: Impute-then-FQE ---------------------------
+
+class ImputeFQE:
+    r'''
+    Impute-then-FQE baseline.
+
+    Step 1: On O_t=1 samples, fit a KRR regression  R_t ~ f(S_t, A_t)
+            to learn  E[R_t | S_t, A_t, O_t=1].
+    Step 2: Impute missing rewards:
+            R_tilde = O_t * R_t + (1 - O_t) * f_hat(S_t, A_t).
+    Step 3: Run standard FQE on ALL samples using R_tilde.
+
+    This is biased under MNAR because the regression learns the
+    observed-conditional mean E[R|S,A,O=1] instead of E[R|S,A].
+
+    Parameters
+    ----------
+    action_list : iterable of actions (e.g., [-1, +1])
+    gamma       : discount factor
+    krr_kwargs  : kwargs for KernelRidgeCV (lam_grid, folds, device)
+    device      : 'cuda' or 'cpu'
+    '''
+    def __init__(self,
+                 action_list=(-1, +1),
+                 gamma: float = 1.0,
+                 krr_kwargs=None,
+                 device: str = 'cuda'):
+        self.action_list = list(action_list)
+        self.gamma = float(gamma)
+        self.device = device if torch.cuda.is_available() else 'cpu'
+        self.krr_kwargs = dict(lam_grid=None, folds=5, device=self.device)
+        if krr_kwargs:
+            self.krr_kwargs.update(krr_kwargs)
+
+        self.Q = {}
+        self.V = {}
+        self.reward_model = {}  # t -> KernelRidgeCV for R_hat
+
+    def fit(self, dataset: Dict[str, np.ndarray], target_policy) -> "ImputeFQE":
+        by_t = group_by_t(dataset)
+        T = max(by_t.keys())
+        next_Q = None
+
+        for t in reversed(range(1, T + 1)):
+            pack = by_t[t]
+            S  = _to32(pack["S"]).to(self.device)
+            A  = _to32(pack["A"]).to(self.device)
+            R  = _to32(pack["R"]).to(self.device).reshape(-1)
+            O  = _to32(pack["O"]).to(self.device).reshape(-1)
+            Sp = _to32(pack["Sp"]).to(self.device)
+
+            mask = (O == 1.0)
+            if mask.sum() <= 3:
+                raise RuntimeError(f"[ImputeFQE] Too few O=1 samples at t={t}.")
+
+            # ---- Step 1: fit reward model on O=1 ----
+            X_obs = _stack_cols(S[mask], A[mask])       # (n_obs, 3)
+            R_obs = R[mask]                              # (n_obs,)
+            r_model = KernelRidgeCV(**self.krr_kwargs).fit(X_obs, R_obs.reshape(-1, 1))
+            self.reward_model[t] = r_model
+
+            # ---- Step 2: impute missing rewards ----
+            X_all = _stack_cols(S, A)
+            R_hat = r_model.predict(X_all).reshape(-1)
+            R_tilde = torch.where(O == 1.0, R, R_hat)
+
+            # ---- Step 3: standard FQE Bellman target ----
+            On_all = _to32(pack["Onext"]).to(self.device).reshape(-1)
+            if next_Q is None:
+                y = R_tilde
+            else:
+                probs = _policy_probs_target(target_policy, Sp, On_all)
+                v_next = torch.zeros_like(R_tilde)
+                for j, a in enumerate(self.action_list):
+                    a_col = torch.full((Sp.shape[0], 1), float(a),
+                                       dtype=torch.float32, device=self.device)
+                    Xa = _stack_cols(Sp, a_col)
+                    v_next += probs[:, j] * next_Q.predict(Xa).reshape(-1)
+                y = R_tilde + self.gamma * v_next
+
+            # Fit Q_t on ALL samples
+            Q_t = KernelRidgeCV(**self.krr_kwargs).fit(X_all, y.reshape(-1, 1))
+            self.Q[t] = Q_t
+
+            def V_of(S_in: Tensor, Ominus_in: Tensor, Q=Q_t):
+                probs = _policy_probs_target(target_policy, S_in, Ominus_in)
+                out = torch.zeros(S_in.shape[0], dtype=torch.float32, device=self.device)
+                for j, a in enumerate(self.action_list):
+                    Xa = _stack_cols(S_in,
+                                     torch.full((S_in.shape[0], 1), float(a),
+                                                dtype=torch.float32, device=self.device))
+                    out += probs[:, j] * Q.predict(Xa).reshape(-1)
+                return out
+
+            self.V[t] = V_of
+            next_Q = Q_t
+
+        self.V1 = self.V[1]
+        return self
+
+    def value(self, S1: np.ndarray, O0: Optional[np.ndarray] = None) -> float:
+        S1_t = torch.as_tensor(S1, dtype=torch.float32, device=self.device)
+        if O0 is None:
+            O0_t = torch.zeros(S1_t.shape[0], dtype=torch.float32, device=self.device)
+        else:
+            O0_t = torch.as_tensor(O0, dtype=torch.float32, device=self.device).reshape(-1)
+        return float(self.V1(S1_t, O0_t).mean().item())
+
+
 # logistic regression for extended propensity score lambda_t
 
 class _LogitBinary:
@@ -743,3 +852,165 @@ class WeightedFQE:
         else:
             O0_t = torch.as_tensor(O0, dtype=torch.float32, device=self.device).reshape(-1)
         return float(self.V1(S1_t, O0_t).mean().item())
+
+
+# --------------------------- baseline: SCOPE (Parbhoo et al. 2020) ---------------------------
+
+class SCOPE:
+    r'''
+    SCOPE: Shaping Control variates for Off-Policy Evaluation.
+
+    Per-step IS estimator with potential-based reward shaping (PBRS).
+    Uses R_obs (= O_t * R_t, i.e. 0 when missing) as the base reward,
+    then adds shaping term  gamma * phi(S_{t+1}) - phi(S_t)  to densify
+    the reward signal.
+
+    This baseline is biased under MNAR because it treats unobserved
+    rewards as 0.  The shaping reduces IS variance but cannot correct
+    the reward bias.
+
+    Algorithm
+    ---------
+    1.  Split data into D_shape (frac_shape) and D_eval (rest).
+    2.  On D_shape, learn potential phi(s) by fitting a KRR on
+        cumulative observed return -> initial state.
+    3.  On D_eval, compute per-step IS estimate with shaped rewards:
+        V_hat = (1/n) sum_i sum_t gamma^t * w_{0:t}^(i)
+                * [ R_obs_t + gamma*phi(S_{t+1}) - phi(S_t) ]
+
+    Parameters
+    ----------
+    gamma       : discount factor (must match env)
+    frac_shape  : fraction of episodes used to learn phi (default 0.3)
+    krr_kwargs  : kwargs for KernelRidgeCV used to learn phi
+    w_cap       : cap on cumulative IS weight to limit variance
+    device      : 'cuda' or 'cpu'
+    '''
+    def __init__(self,
+                 gamma: float = 1.0,
+                 frac_shape: float = 0.3,
+                 krr_kwargs=None,
+                 w_cap: float = 50.0,
+                 device: str = 'cuda'):
+        self.gamma = float(gamma)
+        self.frac_shape = float(frac_shape)
+        self.device = device if torch.cuda.is_available() else 'cpu'
+        self.krr_kwargs = dict(lam_grid=None, folds=5, device=self.device)
+        if krr_kwargs:
+            self.krr_kwargs.update(krr_kwargs)
+        self.w_cap = float(w_cap)
+        self.phi_model = None
+        self._value = None
+
+    def fit(self, dataset: Dict[str, np.ndarray],
+            target_policy, behavior_policy) -> "SCOPE":
+        '''
+        Parameters
+        ----------
+        dataset : flat dict from collect_episodes
+        target_policy  : object with prob_a_plus(s, o_prev)
+        behavior_policy: object with prob_a_plus(s)
+        '''
+        obs   = np.asarray(dataset["obs"],   dtype=np.float32)  # (N, 3)
+        a     = np.asarray(dataset["a"],     dtype=np.float32)  # (N,)
+        r_obs = np.asarray(dataset["r_obs"], dtype=np.float32)  # (N,)
+        obs_n = np.asarray(dataset["obs_n"], dtype=np.float32)  # (N, 3)
+        t_idx = np.asarray(dataset["t"],     dtype=np.int16)    # (N,)
+        ep    = np.asarray(dataset["ep"],    dtype=np.int32)    # (N,)
+
+        T = int(t_idx.max())
+        episodes = np.unique(ep)
+        n_ep = len(episodes)
+
+        # ---- split episodes into shape / eval ----
+        rng = np.random.default_rng(42)
+        perm = rng.permutation(n_ep)
+        n_shape = max(1, int(n_ep * self.frac_shape))
+        ep_shape_set = set(episodes[perm[:n_shape]].tolist())
+        ep_eval_set  = set(episodes[perm[n_shape:]].tolist())
+
+        # ---- Step 1: learn phi(s) on shape episodes ----
+        # For each shape episode, compute cumulative observed return
+        shape_s1_list = []
+        shape_ret_list = []
+        for e in ep_shape_set:
+            mask_e = (ep == e)
+            r_e = r_obs[mask_e]
+            obs_e = obs[mask_e]
+            # cumulative return
+            ret = 0.0
+            disc = 1.0
+            for tt in range(len(r_e)):
+                ret += disc * r_e[tt]
+                disc *= self.gamma
+            shape_s1_list.append(obs_e[0, :2])   # initial state (s1, s2)
+            shape_ret_list.append(ret)
+
+        S_shape = torch.as_tensor(np.stack(shape_s1_list),
+                                  dtype=torch.float32, device=self.device)
+        Y_shape = torch.as_tensor(np.array(shape_ret_list),
+                                  dtype=torch.float32, device=self.device).reshape(-1, 1)
+
+        if S_shape.shape[0] >= 5:
+            self.phi_model = KernelRidgeCV(**self.krr_kwargs).fit(S_shape, Y_shape)
+        else:
+            # too few episodes for CV; use zero potential
+            self.phi_model = None
+
+        # ---- Step 2: per-step IS with shaping on eval episodes ----
+        estimates = []
+        for e in ep_eval_set:
+            mask_e = (ep == e)
+            obs_e   = obs[mask_e]      # (T_e, 3)
+            a_e     = a[mask_e]        # (T_e,)
+            r_obs_e = r_obs[mask_e]    # (T_e,)
+            obs_n_e = obs_n[mask_e]    # (T_e, 3)
+
+            T_e = obs_e.shape[0]
+            cum_w = 1.0
+            traj_val = 0.0
+            disc = 1.0
+
+            for tt in range(T_e):
+                s_t = obs_e[tt, :2]
+                o_prev = int(round(obs_e[tt, 2]))
+                a_t = float(a_e[tt])          # in {-1, +1}
+                s_next = obs_n_e[tt, :2]
+
+                # IS weight for this step
+                p_target = target_policy.prob_a_plus(s_t, o_prev)
+                p_behav  = behavior_policy.prob_a_plus(s_t)
+                if a_t > 0:  # a = +1
+                    w_t = p_target / max(p_behav, 1e-8)
+                else:        # a = -1
+                    w_t = (1.0 - p_target) / max(1.0 - p_behav, 1e-8)
+                cum_w *= w_t
+                # cap cumulative weight
+                cum_w = min(cum_w, self.w_cap)
+
+                # shaped reward
+                phi_s = self._phi(s_t)
+                phi_sp = self._phi(s_next)
+                r_shaped = float(r_obs_e[tt]) + self.gamma * phi_sp - phi_s
+
+                traj_val += disc * cum_w * r_shaped
+                disc *= self.gamma
+
+            estimates.append(traj_val)
+
+        self._value = float(np.mean(estimates)) if len(estimates) > 0 else np.nan
+        return self
+
+    def _phi(self, s: np.ndarray) -> float:
+        '''Evaluate potential function phi(s).'''
+        if self.phi_model is None:
+            return 0.0
+        s_t = torch.as_tensor(s.reshape(1, -1)[:, :2],
+                              dtype=torch.float32, device=self.device)
+        return float(self.phi_model.predict(s_t).item())
+
+    def value(self, S1: np.ndarray = None, O0: np.ndarray = None) -> float:
+        '''Return the pre-computed SCOPE estimate (S1, O0 ignored).'''
+        if self._value is None:
+            raise RuntimeError("Call .fit() first.")
+        return self._value

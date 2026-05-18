@@ -59,9 +59,29 @@ pip install -r requirements.txt
 
 ---
 
-## 2. Simulation studies
+## 2. Cluster submission (SLURM)
 
-### 2.1 Run the evaluation grid
+Two SLURM batch scripts are provided for running on a cluster or GPU node.
+Before submitting, open each script and set `CONDA_SH` and `CONDA_ENV` to
+match your cluster's conda installation.
+
+```bash
+# Simulation studies (CPU, ~7 days for full 50-seed sweep)
+sbatch submit_simulation.sh
+
+# Real-data experiment (GPU, ~2 days for full pipeline)
+sbatch submit_realdata.sh
+```
+
+Both scripts use relative paths and are designed to be submitted from the
+repository root. Each script runs all sub-jobs in parallel internally and
+prints per-job exit codes for easy debugging.
+
+---
+
+## 3. Simulation studies
+
+### 3.1 Run the evaluation grid
 
 The three sweeps correspond to the three sets of results reported in the paper
 (varying sample size, varying horizon, and varying reward type), each crossed
@@ -105,7 +125,7 @@ python -m scripts.eval_grid \
 
 Results are saved to `results/tables/`. Pre-computed results from the paper are already included.
 
-### 2.2 Plot figures
+### 3.2 Plot figures
 
 ```bash
 python -m scripts.plot_ope_results --which all \
@@ -116,36 +136,36 @@ Figures are saved to `results/figures/`.
 
 ---
 
-## 3. Real-data experiment (MIMIC-III sepsis)
+## 4. Real-data experiment (MIMIC-III sepsis)
 
 **Data access:** The raw MIMIC-III data requires credentialed access via
 [PhysioNet](https://physionet.org/content/mimiciii/). Follow the pre-processing
 pipeline of Raghu et al. (2017) to obtain `sepsis_processed_state_action.csv`,
 then place it under `realdata/`.
 
-### 3.1 Full pipeline
+### 4.1 Full pipeline
 
 ```bash
 # Step 1: clean raw data → 48 state features, T=10
-python -m sepsis.clean_sepsis \
+python3 sepsis/clean_sepsis.py \
     --input realdata/sepsis_processed_state_action.csv \
     --outdir realdata
 
 # Step 2: train Double DQN target policy
-python -m sepsis.train_dqn_sepsis \
+python3 sepsis/train_dqn_sepsis.py \
     --input realdata/sepsis_T10.csv \
     --outdir realdata \
     --gamma 1.0 --seed 42 --n_steps 50000
 
 # Step 3: apply MNAR mechanism at four missing rates
-python -m sepsis.apply_mnar \
+python3 sepsis/apply_mnar.py \
     --input realdata/sepsis_T10_with_targets.csv \
     --outdir realdata \
     --miss-rates 0.2,0.4,0.6,0.8
 
 # Step 4: evaluate all OPE methods (run once per missing rate)
 for RATE in 20 40 60 80; do
-    python -m sepsis.eval_ope \
+    python3 sepsis/eval_ope.py \
         --input realdata/sepsis_T10_mnar${RATE}_ope.csv \
         --outdir realdata/results/mnar${RATE} \
         --gamma 1.0 --seed 42 --device cuda \
@@ -154,10 +174,10 @@ for RATE in 20 40 60 80; do
 done
 ```
 
-### 3.2 Plot figures
+### 4.2 Plot figures
 
 ```bash
-python -m scripts.plot_sepsis_ope
+python3 -m scripts.plot_sepsis_ope
 ```
 
 Figures are saved to `realdata/results/figures/`. Pre-computed results from the

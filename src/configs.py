@@ -31,6 +31,11 @@ class EnvConfig:
         RNG seed for reproducibility.
     gamma : float, default=1.0
         Discount factor for future rewards.
+    mnar_c0 : float, default=1.0
+        Intercept in the MNAR logit: logit(O_t) = c0 - 0.1*A + 0.2*[1,-2]^T S + 2.5*R.
+        Lower values increase the missing rate.
+    reward_type : str, default='sigmoid'
+        Reward generation mechanism: 'sigmoid', 'linear', or 'interaction'.
 
     Notes
     -----
@@ -45,6 +50,8 @@ class EnvConfig:
     init_std: float = 1.0
     seed: Optional[int] = 42
     gamma: float = 1.0
+    mnar_c0: float = 1.0
+    reward_type: str = 'sigmoid'
 
     def __post_init__(self) -> None:
         # Basic validation on shapes and ranges.
@@ -56,3 +63,5 @@ class EnvConfig:
             raise ValueError("gamma must be in [0,1].")
         if not (self.sigma_s >= 0.0 and self.sigma_r >= 0.0):
             raise ValueError("sigma_s and sigma_r must be non-negative.")
+        if self.reward_type not in ('sigmoid', 'linear', 'interaction'):
+            raise ValueError(f"reward_type must be 'sigmoid', 'linear', or 'interaction', got '{self.reward_type}'.")
