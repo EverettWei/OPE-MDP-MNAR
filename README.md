@@ -43,8 +43,8 @@ realdata/               Pre-computed sepsis results
 results/                Pre-computed simulation results
   tables/               Raw and summary CSVs for all three sweeps
 
-submit_simulation.sh    SLURM batch script for simulation studies
-submit_realdata.sh      SLURM batch script for real-data experiment
+run_simulation.sh       Run simulation studies locally (bash run_simulation.sh)
+run_realdata.sh         Run real-data experiment locally (bash run_realdata.sh)
 ```
 
 ---
@@ -62,30 +62,28 @@ pip install -r requirements.txt
 
 ---
 
-## 2. Cluster submission (SLURM)
+## 2. Running the experiments
 
-Two SLURM batch scripts are provided for running on a cluster or GPU node.
-Before submitting, open each script and set `CONDA_SH` and `CONDA_ENV` to
-match your cluster's conda installation.
+Activate your environment and run the scripts directly from the repository root:
 
 ```bash
 # Simulation studies
-sbatch submit_simulation.sh
+bash run_simulation.sh
 
-# Real-data experiment (requires GPU)
-sbatch submit_realdata.sh
+# Real-data experiment (GPU recommended; edit --device cpu inside the script if unavailable)
+bash run_realdata.sh
 ```
 
-Both scripts use relative paths and are designed to be submitted from the
-repository root. Each script runs all sub-jobs in parallel internally and
-prints per-job exit codes for easy debugging.
+Each script runs all sub-jobs in parallel internally and prints per-job exit codes for easy debugging.
+
+**HPC/SLURM users:** add `#SBATCH` directives at the top of each script and submit with `sbatch` instead.
 
 ---
 
 ## 3. Pre-computed results
 
 Pre-computed results from the paper are already included under `results/tables/`
-(simulation) and `realdata/results/` (real-data). The SLURM scripts above will
+(simulation) and `realdata/results/` (real-data). The scripts above will
 regenerate them from scratch if needed.
 
 ---

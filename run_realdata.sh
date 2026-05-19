@@ -1,20 +1,9 @@
 #!/bin/bash
-#SBATCH --job-name=ope-mnar-sepsis
-#SBATCH --ntasks=1
-#SBATCH --cpus-per-task=16
-#SBATCH --mem=64G
-#SBATCH --gres=gpu:1
-#SBATCH --time=2-00:00:00
-#SBATCH --output=slurm-realdata-%j.out
-#SBATCH --error=slurm-realdata-%j.err
-
-# ── Cluster configuration: edit these two lines for your system ──────────────
-CONDA_SH="${HOME}/miniforge3/etc/profile.d/conda.sh"
-CONDA_ENV="ope_mnar"
-# ─────────────────────────────────────────────────────────────────────────────
-
-source "$CONDA_SH"
-conda activate "$CONDA_ENV"
+# Run real-data (MIMIC-III sepsis) experiments locally.
+# Usage: bash run_realdata.sh
+#
+# HPC/SLURM users: add your #SBATCH directives here and submit with sbatch.
+# GPU is recommended; set --device cpu below if unavailable.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
